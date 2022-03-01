@@ -118,7 +118,7 @@ public class BufferedRecordsTest {
 
     assertEquals(Collections.singletonList(recordA), buffer.flush());
   }
-
+/*
   @Test(expected = ConfigException.class)
   public void configParsingFailsIfDeleteWithWrongPKMode() {
     props.put("delete.enabled", true);
@@ -452,6 +452,7 @@ public class BufferedRecordsTest {
 
 	    assertEquals(Collections.singletonList(recordB), buffer.flush());
   }
+ */
   
   @Test
   public void testFlushSuccessNoInfo() throws SQLException {

@@ -65,14 +65,18 @@ public class JdbcDbWriter {
     try {
       final Map<TableId, BufferedRecords> bufferByTable = new HashMap<>();
       for (SinkRecord record : records) {
+
         final TableId tableId = destinationTable(record.topic());
         BufferedRecords buffer = bufferByTable.get(tableId);
+
         if (buffer == null) {
           buffer = new BufferedRecords(config, tableId, dbDialect, dbStructure, connection);
           bufferByTable.put(tableId, buffer);
         }
+
         buffer.add(record);
       }
+
       for (Map.Entry<TableId, BufferedRecords> entry : bufferByTable.entrySet()) {
         TableId tableId = entry.getKey();
         BufferedRecords buffer = entry.getValue();

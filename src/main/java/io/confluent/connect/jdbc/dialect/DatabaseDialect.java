@@ -621,6 +621,7 @@ public interface DatabaseDialect extends ConnectionProvider {
      * @throws SQLException if there is a problem binding values into the statement
      */
     void bindRecord(SinkRecord record) throws SQLException;
+
   }
 
   /**

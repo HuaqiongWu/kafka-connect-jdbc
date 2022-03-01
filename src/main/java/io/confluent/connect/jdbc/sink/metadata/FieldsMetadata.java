@@ -18,7 +18,8 @@ package io.confluent.connect.jdbc.sink.metadata;
 import org.apache.kafka.connect.data.Field;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.errors.ConnectException;
-
+import org.apache.kafka.connect.data.Timestamp;
+import org.apache.kafka.connect.data.SchemaBuilder;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -28,6 +29,9 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.GregorianCalendar;
+import java.util.TimeZone;
+import java.util.Calendar;
 
 import io.confluent.connect.jdbc.sink.JdbcSinkConfig;
 
@@ -125,6 +129,23 @@ public class FieldsMetadata {
         allFields.put(field.name(), new SinkRecordField(fieldSchema, field.name(), false));
       }
     }
+    nonKeyFieldNames.add("effective_at");
+    nonKeyFieldNames.add("dead_at");
+    // add two column
+    allFields.put("effective_at",
+            new SinkRecordField(SchemaBuilder.int64(), "effective_at", true));
+
+    GregorianCalendar defaultDeadTime = new GregorianCalendar(
+            9999, Calendar.JANUARY, 1, 0, 0, 0);
+
+    defaultDeadTime.setTimeZone(TimeZone.getTimeZone("UTC"));
+
+    Schema optionalTsWithDefault = Timestamp.builder()
+            .defaultValue(defaultDeadTime.getTime())
+            .optional().build();
+
+    allFields.put("dead_at", new SinkRecordField(optionalTsWithDefault, "dead_at", true));
+
 
     if (allFields.isEmpty()) {
       throw new ConnectException(
@@ -248,6 +269,7 @@ public class FieldsMetadata {
           final Schema fieldSchema = keySchema.field(fieldName).schema();
           allFields.put(fieldName, new SinkRecordField(fieldSchema, fieldName, true));
         }
+
       } else {
         throw new ConnectException(
             "Key schema must be primitive type or Struct, but is of type: " + keySchemaType
@@ -290,6 +312,7 @@ public class FieldsMetadata {
       final Schema fieldSchema = valueSchema.field(fieldName).schema();
       allFields.put(fieldName, new SinkRecordField(fieldSchema, fieldName, true));
     }
+
   }
 
   @Override

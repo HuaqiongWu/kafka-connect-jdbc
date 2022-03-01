@@ -20,6 +20,14 @@ import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.apache.kafka.connect.data.SchemaAndValue;
+import org.apache.kafka.connect.data.Struct;
+import org.apache.kafka.connect.data.SchemaBuilder;
+//import org.apache.kafka.connect.data.Timestamp;
+import org.apache.kafka.connect.data.Field;
+
+
+
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -28,9 +36,15 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Set;
+import java.util.HashSet;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.Collectors;
+//import java.util.GregorianCalendar;
+//import java.util.TimeZone;
+//import java.util.Calendar;
+
 
 import io.confluent.connect.jdbc.dialect.DatabaseDialect;
 import io.confluent.connect.jdbc.dialect.DatabaseDialect.StatementBinder;
@@ -126,15 +140,10 @@ public class BufferedRecords {
           tableId,
           fieldsMetadata
       );
-      final String insertSql = getInsertSql();
-      final String deleteSql = getDeleteSql();
-      log.debug(
-          "{} sql: {} deleteSql: {} meta: {}",
-          config.insertMode,
-          insertSql,
-          deleteSql,
-          fieldsMetadata
-      );
+      final String insertSql = getInsertSql("insert");
+      // final String deleteSql = getDeleteSql();
+      // final String updateSql = getInsertSql("update");
+
       close();
       updatePreparedStatement = dbDialect.createPreparedStatement(connection, insertSql);
       updateStatementBinder = dbDialect.statementBinder(
@@ -143,8 +152,21 @@ public class BufferedRecords {
           schemaPair,
           fieldsMetadata,
           dbStructure.tableDefinition(connection, tableId),
-          config.insertMode
+          INSERT
       );
+      log.debug("end insert statement");
+      /*
+      deletePreparedStatement = dbDialect.createPreparedStatement(connection, updateSql);
+      deleteStatementBinder = dbDialect.statementBinder(
+              deletePreparedStatement,
+              config.pkMode,
+              schemaPair,
+              fieldsMetadata,
+              dbStructure.tableDefinition(connection, tableId),
+              JdbcSinkConfig.InsertMode.UPDATE
+      );
+      */
+      /*
       if (config.deleteEnabled && nonNull(deleteSql)) {
         deletePreparedStatement = dbDialect.createPreparedStatement(connection, deleteSql);
         deleteStatementBinder = dbDialect.statementBinder(
@@ -156,6 +178,7 @@ public class BufferedRecords {
             config.insertMode
         );
       }
+      */
     }
     
     // set deletesInBatch if schema value is not null
@@ -171,6 +194,62 @@ public class BufferedRecords {
     return flushed;
   }
 
+  // add process
+  public SinkRecord processStruct(SinkRecord record, Schema inputSchema, Struct inputStruct) {
+
+    SchemaBuilder builder = SchemaBuilder.struct()
+            .name(inputSchema.name())
+            .doc(inputSchema.doc())
+            .version(inputSchema.version());
+
+    if (null != inputSchema.parameters() && !inputSchema.parameters().isEmpty()) {
+      builder.parameters(inputSchema.parameters());
+    }
+
+    builder.field("effective_at",  SchemaBuilder.int64());
+    //GregorianCalendar defaultDeadTime = new GregorianCalendar(
+    //        9999, Calendar.JANUARY, 1, 0, 0, 0);
+
+    // defaultDeadTime.setTimeZone(TimeZone.getTimeZone("UTC"));
+    // Schema optionalTsWithDefault = SchemaBuilder.int64();
+    builder.field("dead_at",SchemaBuilder.int64());
+
+    for (Field field: inputSchema.fields()) {
+      builder.field(field.name(), field.schema());
+    }
+
+    Schema outputSchema = builder.build();
+    Struct outputStruct = new Struct(outputSchema);
+
+    for (Field field: outputSchema.fields()) {
+      if (field.name() == "dead_at" || field.name() == "effective_at") {
+        continue;
+      }
+      outputStruct.put(field.name(), inputStruct.get(field.name()));
+    }
+
+    outputStruct.put("effective_at", record.timestamp());
+    outputStruct.put("dead_at", 253402185599000L);
+
+
+    SchemaAndValue transformed = new SchemaAndValue(outputSchema, outputStruct);
+
+    return new SinkRecord(
+            record.topic(),
+            record.kafkaPartition(),
+            record.keySchema(),
+            record.key(),
+            transformed.schema(),
+            transformed.value(),
+            record.timestamp()
+    );
+  }
+
+
+
+  // end process
+
+
   public List<SinkRecord> flush() throws SQLException {
     if (records.isEmpty()) {
       log.debug("Records is empty");
@@ -178,17 +257,30 @@ public class BufferedRecords {
     }
     log.debug("Flushing {} buffered records", records.size());
     for (SinkRecord record : records) {
-      if (isNull(record.value()) && nonNull(deleteStatementBinder)) {
-        deleteStatementBinder.bindRecord(record);
-      } else {
-        updateStatementBinder.bindRecord(record);
-      }
+      log.debug("schema: {} ", record.valueSchema());
+      log.debug("value: {} ", record.value());
+      SinkRecord newRecord = processStruct(record, record.valueSchema(), (Struct) record.value());
+
+      log.debug("after schema: {} ", newRecord.valueSchema());
+      log.debug("after value: {} ", newRecord.value());
+
+      // 此处需要处理delete的情况
+
+      updateStatementBinder.bindRecord(newRecord);
+
+      // deleteStatementBinder.bindRecord(newRecord);
+
+      // record add column value
+      // if (isNull(newRecord.value()) && nonNull(deleteStatementBinder)) {
+      // } else {
+      // }
     }
-    Optional<Long> totalUpdateCount = executeUpdates();
     long totalDeleteCount = executeDeletes();
 
+    Optional<Long> totalUpdateCount = executeUpdates();
+
     final long expectedCount = updateRecordCount();
-    log.trace("{} records:{} resulting in totalUpdateCount:{} totalDeleteCount:{}",
+    log.debug("{} records:{} resulting in totalUpdateCount:{} totalDeleteCount:{}",
         config.insertMode, records.size(), totalUpdateCount, totalDeleteCount
     );
     if (totalUpdateCount.filter(total -> total != expectedCount).isPresent()
@@ -264,16 +356,19 @@ public class BufferedRecords {
     }
   }
 
-  private String getInsertSql() throws SQLException {
-    switch (config.insertMode) {
-      case INSERT:
+  private String getInsertSql(String insertMode) throws SQLException {
+    // switch (config.insertMode) {
+    switch (insertMode) {
+      case "insert":
+        log.debug("here is in insert env");
         return dbDialect.buildInsertStatement(
             tableId,
             asColumns(fieldsMetadata.keyFieldNames),
             asColumns(fieldsMetadata.nonKeyFieldNames),
             dbStructure.tableDefinition(connection, tableId)
         );
-      case UPSERT:
+      case "upsert":
+        log.debug("here is in upsert env");
         if (fieldsMetadata.keyFieldNames.isEmpty()) {
           throw new ConnectException(String.format(
               "Write to table '%s' in UPSERT mode requires key field names to be known, check the"
@@ -295,11 +390,19 @@ public class BufferedRecords {
               dbDialect.name()
           ));
         }
-      case UPDATE:
+      case "update":
+        log.debug("here is in update env");
+        Set<String> updateList = new HashSet<>();
+        updateList.add("dead_at");
+        Set<String> keyList = new HashSet<>();
+        for (String name : fieldsMetadata.keyFieldNames) {
+          keyList.add(name);
+        }
+        keyList.add("dead_at");
         return dbDialect.buildUpdateStatement(
             tableId,
-            asColumns(fieldsMetadata.keyFieldNames),
-            asColumns(fieldsMetadata.nonKeyFieldNames),
+            asColumns(keyList),
+            asColumns(updateList),
             dbStructure.tableDefinition(connection, tableId)
         );
       default:
